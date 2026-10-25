@@ -1,5 +1,5 @@
 # Makefile
-.PHONY: dev prod down
+.PHONY: dev prod down clean
 
 dev:
 	docker compose up -d --build
