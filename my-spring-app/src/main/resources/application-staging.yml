@@ -1,0 +1,7 @@
+# 파일: src/main/resources/application-staging.yml
+spring:
+  datasource:
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
