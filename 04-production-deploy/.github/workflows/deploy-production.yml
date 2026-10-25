@@ -1,0 +1,102 @@
+# .github/workflows/deploy-production.yml
+name: Deploy to Production
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "되돌릴 이미지 태그 (예: prod-<커밋 SHA>). 이미 있는 태그만 넣는다"
+        required: true
+
+jobs:
+  build:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_tag: prod-${{ github.sha }}
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v5
+
+      - name: 이미지 이름 소문자로
+        run: echo "IMAGE_BASE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: GitHub Container Registry 로그인
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker 이미지 빌드 및 푸시
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE_BASE }}:prod-${{ github.sha }}
+
+  deploy:
+    needs: build
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      IMAGE_TAG: ${{ inputs.image_tag || needs.build.outputs.image_tag }}
+
+    steps:
+      - name: 프로덕션 서버에 배포 (이전 태그 백업 포함)
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          envs: IMAGE_TAG
+          script: |
+            set -e
+            cd /opt/app
+            grep '^IMAGE_TAG=' .env > .previous-tag
+            sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=${IMAGE_TAG}|" .env
+            docker compose pull
+            docker compose up -d --remove-orphans
+
+      - name: 헬스 체크 (서버 안에서)
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          script: |
+            set -e
+            for i in $(seq 1 15); do
+              if curl -fs http://localhost:8080/actuator/health > /dev/null; then
+                echo "프로덕션 헬스 체크 성공 (시도 $i/15)"
+                exit 0
+              fi
+              sleep 10
+            done
+            echo "프로덕션 헬스 체크 실패 - 롤백이 필요할 수 있습니다"
+            exit 1
+
+      - name: 배포 성공 알림
+        if: success()
+        run: |
+          curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+            -H "Content-Type: application/json" \
+            -d '{
+              "text": "🚀 프로덕션 배포 성공\n태그: ${{ env.IMAGE_TAG }}\n승인자 검토를 거쳐 배포되었습니다."
+            }'
+
+      - name: 배포 실패 알림
+        if: failure()
+        run: |
+          curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+            -H "Content-Type: application/json" \
+            -d '{
+              "text": "🔥 프로덕션 배포 실패\n태그: ${{ env.IMAGE_TAG }}\n즉시 확인이 필요합니다.\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }'

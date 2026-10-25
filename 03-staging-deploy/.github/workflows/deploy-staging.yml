@@ -1,0 +1,99 @@
+# .github/workflows/deploy-staging.yml
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [ develop ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v5
+
+      - name: 이미지 이름 소문자로
+        run: |
+          IMAGE_BASE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "IMAGE_NAME=${IMAGE_BASE}:staging-${GITHUB_SHA}" >> "$GITHUB_ENV"
+          echo "IMAGE_LATEST=${IMAGE_BASE}:staging-latest" >> "$GITHUB_ENV"
+
+      - name: GitHub Container Registry 로그인
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker 이미지 빌드 및 푸시
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}
+            ${{ env.IMAGE_LATEST }}
+
+      - name: 스테이징 서버에 배포
+        uses: appleboy/ssh-action@v1
+        env:
+          IMAGE_TAG: staging-${{ github.sha }}
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          envs: IMAGE_TAG
+          script: |
+            set -e
+            cd /opt/app
+            sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=${IMAGE_TAG}|" .env
+            docker compose pull
+            docker compose up -d --remove-orphans
+            docker image prune -f
+
+      - name: 헬스 체크 (서버 안에서)
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          script: |
+            set -e
+            echo "배포 후 서버 안정화 대기..."
+            sleep 15
+
+            for i in $(seq 1 10); do
+              if curl -fs http://localhost:8080/actuator/health > /dev/null; then
+                echo "헬스 체크 성공 (시도 $i/10)"
+                exit 0
+              fi
+
+              echo "헬스 체크 대기 중... ($i/10)"
+              sleep 5
+            done
+
+            echo "헬스 체크 실패"
+            exit 1
+
+      - name: 배포 성공 알림
+        if: success()
+        run: |
+          curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+            -H "Content-Type: application/json" \
+            -d '{
+              "text": "✅ 스테이징 배포 성공\n커밋: ${{ github.sha }}\n작성자: ${{ github.actor }}\n브랜치: develop"
+            }'
+
+      - name: 배포 실패 알림
+        if: failure()
+        run: |
+          curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+            -H "Content-Type: application/json" \
+            -d '{
+              "text": "❌ 스테이징 배포 실패\n커밋: ${{ github.sha }}\n작성자: ${{ github.actor }}\n확인: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }'
