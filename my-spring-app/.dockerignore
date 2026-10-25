@@ -1,0 +1,17 @@
+# Gradle 빌드 결과물
+build/
+.gradle/
+
+# IDE 설정 파일
+.idea/
+*.iml
+.vscode/
+
+# Git
+.git/
+.gitignore
+
+# 기타
+*.md
+docker-compose*.yml
+.env
