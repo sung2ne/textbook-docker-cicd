@@ -16,7 +16,7 @@ if [ "$response" != "200" ]; then
         -d "{\"text\": \"$message\"}"
 
     # 자동 재시작 시도
-    cd /opt/myapp
+    cd /opt/myapp || exit 1
     docker compose restart app
 
     echo "$message - 재시작 시도" >> "$HOME/healthcheck.log"
