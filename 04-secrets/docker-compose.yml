@@ -1,0 +1,12 @@
+# docker-compose.yml
+services:
+  db:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/db_root_password
+    secrets:
+      - db_root_password
+
+secrets:
+  db_root_password:
+    file: ./secrets/db_root_password.txt
